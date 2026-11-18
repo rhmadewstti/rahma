@@ -6249,6 +6249,120 @@ function renderFotoPesertaDidik() {
         simpanKelengkapanKelas('fotoPesertaDidikKelas1', fotoPesertaDidikKelas);
     }
 
+
+/* ============================================
+   KOMPRES FOTO OTOMATIS MAKSIMAL 500 KB
+   ============================================ */
+
+async function kompresFotoUntukUpload_(file) {
+    const TARGET_KB = 500;
+    const TARGET_BYTES = TARGET_KB * 1024;
+    const MAX_DIMENSI = 1600;
+
+    if (!file || !file.type.startsWith('image/')) {
+        throw new Error('File yang dipilih bukan gambar.');
+    }
+
+    let bitmap;
+
+    try {
+        bitmap = await createImageBitmap(file);
+
+        let lebar = bitmap.width;
+        let tinggi = bitmap.height;
+
+        // Perkecil dimensi jika foto sangat besar.
+        if (Math.max(lebar, tinggi) > MAX_DIMENSI) {
+            const skala = MAX_DIMENSI / Math.max(lebar, tinggi);
+            lebar = Math.round(lebar * skala);
+            tinggi = Math.round(tinggi * skala);
+        }
+
+        let hasilBlob = null;
+
+        // Coba beberapa kualitas JPEG.
+        const kualitasList = [0.85, 0.78, 0.70, 0.62, 0.55, 0.48, 0.40];
+
+        for (let percobaan = 0; percobaan < 6; percobaan++) {
+            const canvas = document.createElement('canvas');
+            canvas.width = lebar;
+            canvas.height = tinggi;
+
+            const ctx = canvas.getContext('2d');
+
+            // Latar putih agar foto transparan tidak menjadi hitam.
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(0, 0, lebar, tinggi);
+            ctx.drawImage(bitmap, 0, 0, lebar, tinggi);
+
+            for (const kualitas of kualitasList) {
+                const blob = await new Promise(resolve => {
+                    canvas.toBlob(
+                        resolve,
+                        'image/jpeg',
+                        kualitas
+                    );
+                });
+
+                if (!blob) {
+                    throw new Error('Browser gagal mengompres foto.');
+                }
+
+                hasilBlob = blob;
+
+                if (blob.size <= TARGET_BYTES) {
+                    break;
+                }
+            }
+
+            canvas.width = 0;
+            canvas.height = 0;
+
+            if (hasilBlob && hasilBlob.size <= TARGET_BYTES) {
+                break;
+            }
+
+            // Jika masih terlalu besar, perkecil dimensi lagi.
+            lebar = Math.round(lebar * 0.75);
+            tinggi = Math.round(tinggi * 0.75);
+        }
+
+        if (!hasilBlob || hasilBlob.size > TARGET_BYTES) {
+            throw new Error(
+                'Foto belum bisa diperkecil hingga 500 KB. ' +
+                'Silakan pilih foto lain yang lebih kecil.'
+            );
+        }
+
+        const base64 = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(
+                new Error('Gagal membaca hasil kompres foto.')
+            );
+
+            reader.readAsDataURL(hasilBlob);
+        });
+
+        console.log('[Kompres Foto]', {
+            ukuranAsliKB: Math.round(file.size / 1024),
+            ukuranHasilKB: Math.round(hasilBlob.size / 1024),
+            formatHasil: 'image/jpeg'
+        });
+
+        return {
+            base64: base64,
+            mimeType: 'image/jpeg',
+            ukuranKB: Math.round(hasilBlob.size / 1024)
+        };
+
+    } finally {
+        if (bitmap) bitmap.close();
+    }
+}
+
+
     /* =========================================================
        FOTO PESERTA DIDIK - OTOMATIS UPLOAD KE GOOGLE DRIVE
        ========================================================= */
@@ -6276,15 +6390,21 @@ async function uploadFotoPesertaDidik(index, file) {
     renderFotoPesertaDidik();
 
     try {
-        const base64 = await fileToBase64Drive_(file);
+        
+const fotoKompres = await kompresFotoUntukUpload_(file);
 
-        // Kirim foto dan periksa respons server.
-        const hasil = await kirimFotoDrive_({
-            action: 'uploadFotoSiswa',
-            nama: nama,
-            base64: base64,
-            mimeType: file.type
-        });
+console.log(
+    '[Foto Siswa] Ukuran setelah kompres:',
+    fotoKompres.ukuranKB + ' KB'
+);
+
+const hasil = await kirimFotoDrive_({
+    action: 'uploadFotoSiswa',
+    nama: nama,
+    base64: fotoKompres.base64,
+    mimeType: fotoKompres.mimeType
+});
+
 
         if (!hasil || hasil.success !== true) {
             throw new Error(
